@@ -1,0 +1,127 @@
+--MY VERSION SHOULD NOT BE TRUSTED TO WORK PROPERLY, IF YOU WILL, YOU HAVE FULL PERMISSION TO REFINE IT.
+local plr, run, ws = game:GetService("Players").LocalPlayer, game:GetService("RunService"), workspace
+local gui = Instance.new("ScreenGui", plr:WaitForChild("PlayerGui"))
+gui.Name, gui.ResetOnSpawn = "PredictiveAimerGUI", false
+
+local function makeBtn(pos, text)
+	local b = Instance.new("TextButton", gui)
+	b.Size, b.Position, b.BackgroundColor3, b.TextColor3, b.Text = UDim2.new(0,150,0,30), pos, Color3.new(0,0,0), Color3.new(1,1,1), text
+	b.Font, b.TextSize = Enum.Font.SourceSans, 18
+	return b
+end
+
+local dropdown, enableBtn, deleteBtn = makeBtn(UDim2.new(0,10,0,10), "Target: Killer"), makeBtn(UDim2.new(0,10,0,110), "Enable Aimer"), makeBtn(UDim2.new(0,10,0,150), "Delete Script")
+
+local options = Instance.new("Frame", gui)
+options.Size, options.Position, options.Visible, options.BackgroundColor3 = UDim2.new(0,150,0,60), UDim2.new(0,10,0,40), false, Color3.new(0,0,0)
+for _,n in ipairs({"Killer","Survivor"}) do
+	local b = makeBtn(UDim2.new(0,0,0,(n=="Killer" and 0 or 30)), n)
+	b.Parent = options
+	b.MouseButton1Click:Connect(function() TargetChoice, dropdown.Text, options.Visible = n, "Target: "..n, false end)
+end
+
+local input = Instance.new("TextBox", gui)
+input.Size, input.Position, input.BackgroundColor3, input.PlaceholderText, input.Text, input.TextColor3 = UDim2.new(0,150,0,30), UDim2.new(0,10,0,190), Color3.new(0,0,0), "(DEFAULT: 1.0)", "", Color3.new(1,1,1)
+dropdown.MouseButton1Click:Connect(function() options.Visible = not options.Visible end)
+
+local TargetChoice, Ball, prevPos, AimerEnabled, conn, smoothing = "Killer", nil, nil, false, nil, 0.25
+local GameAssets, Teams = ws:WaitForChild("GameAssets"), ws.GameAssets:WaitForChild("Teams")
+local KillerFolder, SurvivorFolder = Teams:WaitForChild("Killer"), Teams:WaitForChild("Survivor")
+
+local function makeBall(pos)
+	Ball = Instance.new("Part", ws)
+	Ball.Size, Ball.Shape, Ball.Anchored, Ball.CanCollide, Ball.Material, Ball.Color = Vector3.new(2,2,2), Enum.PartType.Ball, true, false, Enum.Material.Neon, Color3.fromRGB(0,255,255)
+	Ball.Position = pos
+	local gui = Instance.new("BillboardGui", Ball)
+	gui.Size, gui.AlwaysOnTop = UDim2.new(0,100,0,40), true
+	local label = Instance.new("TextLabel", gui)
+	label.Size, label.BackgroundTransparency, label.TextColor3 = UDim2.new(1,0,1,0), 1, Color3.new(1,1,1)
+	label.TextScaled = true
+end
+
+local function ignoreList()
+	local t = {}
+	for _,v in ipairs(game:GetService("Players"):GetPlayers()) do if v.Character then table.insert(t, v.Character) end end
+	for _,obj in ipairs(ws:GetDescendants()) do
+		if obj:IsA("BasePart") and ((not obj.CanCollide) or obj.Transparency == 1) then table.insert(t, obj) end
+	end
+	if Ball then table.insert(t, Ball) end
+	return t
+end
+
+local function isVisible(targetPos)
+	local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return false end
+	local dir, params = targetPos - hrp.Position, RaycastParams.new()
+	params.FilterType, params.FilterDescendantsInstances = Enum.RaycastFilterType.Blacklist, ignoreList()
+	local ray = ws:Raycast(hrp.Position, dir, params)
+	if not ray then return true end
+	local dist = (ray.Position - hrp.Position).Magnitude
+	return dist >= dir.Magnitude - 4, dist
+end
+
+local function closestSurvivor()
+	local best, shortest = nil, math.huge
+	local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	for _,m in ipairs(SurvivorFolder:GetChildren()) do
+		local h = m:FindFirstChild("HumanoidRootPart")
+		if h and m.Name ~= plr.Name then
+			local vis, distToWall = isVisible(h.Position)
+			local dist = (h.Position - hrp.Position).Magnitude
+			if (vis or distToWall <= 25) and dist < shortest then shortest, best = dist, m end
+		end
+	end
+	return best
+end
+
+local function updateBall(dt)
+	local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+	if not hrp then return end
+	local origin, tgt = hrp.Position, nil
+	if TargetChoice == "Killer" then
+		for _,m in ipairs(KillerFolder:GetChildren()) do
+			local h = m:FindFirstChild("HumanoidRootPart")
+			if h and m ~= plr.Character then
+				local vis, wallDist = isVisible(h.Position)
+				if vis or wallDist <= 25 then tgt = m break end
+			end
+		end
+	else tgt = closestSurvivor() end
+	if not tgt then return end
+
+	local h = tgt:FindFirstChild("HumanoidRootPart")
+	if not h then return end
+	local pos, vel, d = h.Position, Vector3.zero, (h.Position - origin).Magnitude
+	if prevPos then
+		local diff = pos - prevPos
+		if diff.Magnitude < 60 then vel = diff / math.max(dt,0.016) end
+	end
+	prevPos = pos
+
+	local base = tonumber(input.Text) or 1.0
+	local mode = (d < 40) and "Melee" or "Ranged"
+	local pred = base * (mode=="Melee" and math.clamp(d/30,0.3,1.2) or math.clamp(d/50,0.5,2.0))
+	local vis, wallDist = isVisible(pos)
+	if not vis and wallDist <= 8 then pred /= 1.5 end
+	local predicted = pos + vel * pred
+	predicted = Vector3.new(predicted.X, h.Position.Y, predicted.Z)
+
+	if not Ball then makeBall(predicted) else Ball.Position = Ball.Position:Lerp(predicted, smoothing) end
+	Ball.BillboardGui.TextLabel.Text = string.format("%s | %.2f", mode, pred)
+	local dir = Vector3.new(Ball.Position.X - origin.X, 0, Ball.Position.Z - origin.Z)
+	if dir.Magnitude > 1 then hrp.CFrame = CFrame.new(hrp.Position, hrp.Position + dir.Unit) end
+end
+
+enableBtn.MouseButton1Click:Connect(function()
+	if AimerEnabled then return end
+	AimerEnabled = true
+	conn = run.RenderStepped:Connect(updateBall)
+end)
+
+deleteBtn.MouseButton1Click:Connect(function()
+	if conn then conn:Disconnect() end
+	if Ball then Ball:Destroy() end
+	gui:Destroy()
+	script:Destroy()
+end)
